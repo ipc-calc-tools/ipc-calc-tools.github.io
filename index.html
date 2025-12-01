@@ -126,7 +126,10 @@ TRANS = {
         "congrats": "おめでとうございます！素晴らしい取り組みです。あなたの施設は手指衛生リーダーシップレベルに達成しています。",
         "leadership_criteria_full": "リーダーシップレベル達成要件: リーダーシップ基準の5つの区分のそれぞれにおいて少なくとも1つを満たし（「はい」と回答）、かつリーダーシップ基準スコアの合計が12点以上であること。",
         "err_file_size_exceeded": "❌ エラー: ファイルサイズが制限を超えています",
-        "err_file_size_detail": "アップロードされたファイルの合計サイズが500MBを超えています（合計: {total_mb:.2f}MB / 制限: 500MB）。ファイルを分割するか、サイズを削減してから再度お試しください。"
+        "err_file_size_detail": "アップロードされたファイルの合計サイズが500MBを超えています（合計: {total_mb:.2f}MB / 制限: 500MB）。ファイルを分割するか、サイズを削減してから再度お試しください。",
+        "github_link": "📦 GitHubリポジトリ",
+        "github_desc": "ソースコードとサンプルデータを公開しています",
+        "github_open": "🔗 GitHubで開く"
     },
     "en": {
         "title": "HHSAF Data Visualization Tool",
@@ -196,7 +199,10 @@ TRANS = {
         "congrats": "Congratulations and thank you! Your facility has reached the Hand Hygiene Leadership level.",
         "leadership_criteria_full": "Leadership Level Criteria: At least one leadership criteria must be met ('yes') in each of the 5 categories AND the total leadership score must be 12 or more.",
         "err_file_size_exceeded": "❌ Error: File size limit exceeded",
-        "err_file_size_detail": "The total size of uploaded files exceeds 500MB (Total: {total_mb:.2f}MB / Limit: 500MB). Please split the files or reduce their size and try again."
+        "err_file_size_detail": "The total size of uploaded files exceeds 500MB (Total: {total_mb:.2f}MB / Limit: 500MB). Please split the files or reduce their size and try again.",
+        "github_link": "📦 GitHub Repository",
+        "github_desc": "Source code and sample data are available",
+        "github_open": "🔗 Open on GitHub"
     }
 }
 
@@ -882,6 +888,18 @@ with st.sidebar.expander("⚙️ 設定 / Settings", expanded=False):
         # st.rerun()を削除して、自動更新に任せる（タブの選択状態を保持するため）
         
     st.caption(L["theme_note"])
+
+# GitHubリンク（サイドバー最下部）
+st.sidebar.divider()
+st.sidebar.markdown(f"### {L['github_link']}")
+st.sidebar.markdown(f"<small>{L['github_desc']}</small>", unsafe_allow_html=True)
+st.sidebar.markdown(
+    f'<a href="https://github.com/ipc-calc-tools/ipc-calc-tools.github.io" target="_blank" style="text-decoration: none; color: inherit;">'
+    f'<div style="background-color: #24292e; color: white; padding: 10px; border-radius: 5px; text-align: center; margin-top: 10px;">'
+    f'{L["github_open"]}'
+    f'</div></a>',
+    unsafe_allow_html=True
+)
 
 # データがセッションにある場合（言語切り替え時もここを通る）
 if st.session_state.df_processed is not None:
