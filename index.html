@@ -1,0 +1,1690 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>IPC Calc Tools - HHSAF Analysis</title>
+    <meta name="description" content="WHO HHSAF Analysis Tool running entirely in the browser using stlite.">
+    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.53.0/build/stlite.js"></script>
+    <style>
+        /* フォント設定：日本語を見やすく */
+        body {
+            font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+    <script>
+        stlite.mount({
+            requirements: ["pandas", "plotly", "streamlit"],
+            entrypoint: "app.py",
+            streamlitConfig: {
+                "server.maxUploadSize": 500,
+                "client.toolbarMode": "viewer"
+            },
+            files: {
+                "app.py": `
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+import io
+import re
+
+# --- 1. Language & Configurations ---
+st.set_page_config(layout="wide", page_title="IPC Calc Tools", page_icon="🏥")
+
+# Hide anchor links
+st.markdown("""
+    <style>
+    /* ヘッダーのアンカーリンクを非表示にする */
+    .st-emotion-cache-1629p8f a, .st-emotion-cache-10trblm a, .st-emotion-cache-1r7r3e4 a {
+        display: none !important;
+    }
+    /* 一般的なアンカーリンクの非表示設定 */
+    h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
+        display: none !important;
+    }
+    /* ヘッダー（ハンバーガーメニュー含む）を非表示 */
+    [data-testid="stHeader"] {
+        display: none;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Translations / 翻訳辞書
+TRANS = {
+    "ja": {
+        "title": "HHSAF データ可視化ツール",
+        "subtitle": "WHO 手指衛生自己評価フレームワーク (HHSAF) 分析システム",
+        "upload_label": "CSVファイルをアップロード",
+        "upload_help": "Shift-JIS または UTF-8 形式のCSVに対応しています",
+        "select_facility": "施設を選択",
+        "select_month": "登録年月を選択",
+        "total_score": "総合スコア",
+        "leadership_score": "リーダーシップ基準スコア",
+        "leadership_status": "リーダーシップ判定",
+        "eligible": "評価対象 (376点以上)",
+        "not_eligible": "評価対象外 (総合スコア不足)",
+        "radar_title": "5つのコア領域 (Core Areas)",
+        "bar_chart_title": "エリア別スコア比較",
+        "progress_bar_title": "エリア別達成率",
+        "question_detail_title": "詳細質問スコア（各エリア100点満点中）",
+        "question_label": "質問項目",
+        "score_label": "スコア",
+        "area_total": "エリア合計",
+        "area_labels": ["システム変革", "教育・研修", "評価とフィードバック", "職場でのリマインダー", "組織の安全風土"],
+        "area_labels_full": ["System Change", "Training and Education", "Evaluation and Feedback", "Reminders in the Workplace", "Institutional Safety Climate"],
+        "tab_dashboard": "ダッシュボード",
+        "tab_timeseries": "経時的変化",
+        "tab_comparison": "施設間比較",
+        "tab_leadership": "リーダーシップ基準",
+        "err_encoding": "ファイルの読み込みに失敗しました。CSVの形式を確認してください。",
+        "level_labels": ["不十分 (Inadequate)", "基本 (Basic)", "中級 (Intermediate)", "上級 (Advanced)"],
+        "level_short": ["不十分", "基本", "中級", "上級"],
+        "points": "点",
+        "download_chart": "チャートをダウンロード",
+        "no_data": "データがありません",
+        "landing_info": "👈 左側のサイドバーからCSVファイルをアップロードしてください。",
+        "landing_title": "📊 IPC Calc Tools について",
+        "landing_features": "✨ 特徴",
+        "landing_security": "セキュリティ: データは外部サーバーに送信されず、すべてあなたのPC内（ローカル環境）で処理されます。",
+        "landing_simple": "簡単: CSVファイルをドラッグ＆ドロップするだけで、グラフが自動生成されます。",
+        "landing_features_desc": "多機能: 総合スコアだけでなく、経時変化や他施設比較もタブで切り替えて確認できます。",
+        "landing_format": "📁 対応CSVフォーマット",
+        "landing_format_desc": "J-SIPHE等から出力される形式に対応しています。以下の列が含まれている必要があります：",
+        "comparison_title": "施設間比較",
+        "time_series_title": "経時的変化",
+        "leadership_chart_title": "リーダーシップ基準スコア",
+        "no_leadership_data": "リーダーシップ基準のデータがありません",
+        "leadership_required_score": "総合スコアが{score}点のため、リーダーシップ基準の評価には376点以上が必要です。",
+        "back_to_top": "🏠 TOP画面に戻る/初期化する",
+        "back_to_top_help": "⚠️ TOP画面に戻るとデータは初期化されます。",
+        "memory_warning": "⚠️ 注意: 数百MBのファイルを読み込む際は、PCのメモリを大量に消費します。ブラウザがクラッシュしたり、動作が停止したりする場合は、ファイルを分割するか、行数を減らして試してみてください。",
+        "landing_desc": "WHOが推奨する**手指衛生自己評価フレームワーク (HHSAF)** の結果を、ブラウザだけですぐに可視化・分析できるツールです。",
+        "settings": "⚙️ 設定",
+        "language": "言語",
+        "chart_theme": "グラフの配色",
+        "theme_light": "ライト (Light)",
+        "theme_dark": "ダーク (Dark)",
+        "theme_note": "※背景のテーマ（アプリ全体の色）は、ブラウザの設定（ライト/ダークモード）から変更してください。",
+        "analysis_unit": "分析単位",
+        "unit_month": "月次 (Monthly)",
+        "unit_year": "年次 (Yearly)",
+        "agg_method": "集計方法 (同一年内のデータ処理)",
+        "agg_end": "年の最後 (End of Year) [デフォルト]",
+        "agg_start": "年の初め (Start of Year)",
+        "agg_mean": "年の平均 (Average)",
+        "select_year": "対象年を選択",
+        "leadership_achieved": "🎉 手指衛生リーダーシップレベル到達！",
+        "leadership_failed": "リーダーシップレベル未達",
+        "leadership_criteria_desc": "条件: 各区分で少なくとも1つの基準を満たし、かつ合計スコアが12点以上",
+        "congrats": "おめでとうございます！素晴らしい取り組みです。あなたの施設は手指衛生リーダーシップレベルに達成しています。",
+        "leadership_criteria_full": "リーダーシップレベル達成要件: リーダーシップ基準の5つの区分のそれぞれにおいて少なくとも1つを満たし（「はい」と回答）、かつリーダーシップ基準スコアの合計が12点以上であること。",
+        "err_file_size_exceeded": "❌ エラー: ファイルサイズが制限を超えています",
+        "err_file_size_detail": "アップロードされたファイルの合計サイズが500MBを超えています（合計: {total_mb:.2f}MB / 制限: 500MB）。ファイルを分割するか、サイズを削減してから再度お試しください。"
+    },
+    "en": {
+        "title": "HHSAF Data Visualization Tool",
+        "subtitle": "WHO Hand Hygiene Self-Assessment Framework Analysis System",
+        "upload_label": "Upload CSV File",
+        "upload_help": "Supports Shift-JIS or UTF-8 CSV",
+        "select_facility": "Select Facility",
+        "select_month": "Select Month",
+        "total_score": "Total Score",
+        "leadership_score": "Leadership Score",
+        "leadership_status": "Leadership Status",
+        "eligible": "Eligible (Total >= 376)",
+        "not_eligible": "Not Eligible (Insufficient Total Score)",
+        "radar_title": "5 Core Areas",
+        "bar_chart_title": "Area Score Comparison",
+        "progress_bar_title": "Area Achievement Rate",
+        "question_detail_title": "Detailed Question Scores",
+        "question_label": "Question",
+        "score_label": "Score",
+        "area_total": "Area Total",
+        "area_labels": ["System Change", "Training & Education", "Evaluation & Feedback", "Reminders", "Safety Climate"],
+        "area_labels_full": ["System Change", "Training and Education", "Evaluation and Feedback", "Reminders in the Workplace", "Institutional Safety Climate"],
+        "tab_dashboard": "Dashboard",
+        "tab_timeseries": "Time Series",
+        "tab_comparison": "Comparison",
+        "tab_leadership": "Leadership Criteria",
+        "err_encoding": "Failed to read file. Please check CSV format.",
+        "level_labels": ["Inadequate", "Basic", "Intermediate", "Advanced"],
+        "level_short": ["Inadequate", "Basic", "Intermediate", "Advanced"],
+        "points": "points",
+        "download_chart": "Download Chart",
+        "no_data": "No data available",
+        "landing_info": "👈 Please upload a CSV file from the sidebar.",
+        "landing_title": "📊 About IPC Calc Tools",
+        "landing_features": "✨ Features",
+        "landing_security": "Security: Data is processed entirely on your PC and never sent to external servers.",
+        "landing_simple": "Simple: Just drag and drop a CSV file to automatically generate beautiful charts.",
+        "landing_features_desc": "Multi-functional: View total scores, temporal changes, and facility comparisons in separate tabs.",
+        "landing_format": "📁 Supported CSV Format",
+        "landing_format_desc": "Compatible with formats exported from J-SIPHE. The following columns are required:",
+        "comparison_title": "Facility Comparison",
+        "time_series_title": "Temporal Changes",
+        "leadership_chart_title": "Leadership Criteria Score",
+        "no_leadership_data": "No leadership criteria data available",
+        "leadership_required_score": "Total score is {score} points. Leadership criteria evaluation requires 376 points or more.",
+        "back_to_top": "🏠 Back to TOP / Reset",
+        "back_to_top_help": "⚠️ Returning to TOP will reset all data.",
+        "memory_warning": "⚠️ Warning: Loading large files (hundreds of MB) consumes significant memory. If the browser crashes or freezes, please try splitting the file or reducing the number of rows.",
+        "landing_desc": "A tool to visualize and analyze **WHO Hand Hygiene Self-Assessment Framework (HHSAF)** results instantly in your browser.",
+        "settings": "⚙️ Settings",
+        "language": "Language",
+        "chart_theme": "Chart Theme",
+        "theme_light": "Light",
+        "theme_dark": "Dark",
+        "theme_note": "*Note: To change the background theme (app appearance), please use your browser's Light/Dark mode settings.",
+        "analysis_unit": "Analysis Unit",
+        "unit_month": "Monthly",
+        "unit_year": "Yearly",
+        "agg_method": "Aggregation Method",
+        "agg_end": "End of Year [Default]",
+        "agg_start": "Start of Year",
+        "agg_mean": "Average",
+        "select_year": "Select Year",
+        "leadership_achieved": "🎉 Hand Hygiene Leadership Level Reached!",
+        "leadership_failed": "Leadership Level Not Reached",
+        "leadership_criteria_desc": "Criteria: At least one criteria met per category AND total score >= 12",
+        "congrats": "Congratulations and thank you! Your facility has reached the Hand Hygiene Leadership level.",
+        "leadership_criteria_full": "Leadership Level Criteria: At least one leadership criteria must be met ('yes') in each of the 5 categories AND the total leadership score must be 12 or more.",
+        "err_file_size_exceeded": "❌ Error: File size limit exceeded",
+        "err_file_size_detail": "The total size of uploaded files exceeds 500MB (Total: {total_mb:.2f}MB / Limit: 500MB). Please split the files or reduce their size and try again."
+    }
+}
+
+# Leadership Criteria Descriptions / リーダーシップ基準の詳細
+LEADERSHIP_DESC = {
+    "1.1": {
+        "ja": "Point-of-care での手指衛生を至適化するために必要なインフラストラクチャーの変更に関する費用便益分析が行われていますか。",
+        "en": "Has a cost-benefit analysis of infrastructure changes required for the performance of optimal hand hygiene at the point of care been performed?"
+    },
+    "1.2": {
+        "ja": "自施設で実施される手指衛生の 80% 以上を手指消毒が占めていますか。",
+        "en": "Does alcohol-based handrubbing account for at least 80% of hand hygiene actions performed in your facility."
+    },
+    "2.1": {
+        "ja": "手指衛生チームは、地域の他の施設の代表者に対し、手指衛生推進のための研修を行っていますか。",
+        "en": "Has the hand hygiene team undertaken training of representatives from other facilities in the area of hand hygiene promotion?"
+    },
+    "2.2": {
+        "ja": "地域の医師および看護師の教育カリキュラムに手指衛生の原則が組み込まれていますか。",
+        "en": "Have hand hygiene principles been incorporated into local medical and nursing educational curricula?"
+    },
+    "3.1": {
+        "ja": "特定の医療関連感染（HCAI）は監視されていますか（Staphylococcus aureus 菌血症、グラム陰性菌菌血症、医療器具関連感染症等）。",
+        "en": "Are specific healthcare associated infections (HCAIs) monitored? (eg. Staphylococcus aureus bacteremia, Gram negative bacteremia, device-related infections)"
+    },
+    "3.2": {
+        "ja": "ハイリスク部門（集中治療室、新生児室等）において HCAI を監視するシステムはありますか。",
+        "en": "Is a system in place for monitoring of HCAI in high risk-settings? (e.g. intensive care and neonatal units)"
+    },
+    "3.3": {
+        "ja": "（最低でも）年 1 回は施設全体の HCAI 有病率調査が行われていますか。",
+        "en": "Is a facility-wide prevalence survey of HCAI performed (at least) annually?"
+    },
+    "3.4": {
+        "ja": "手指衛生遵守率と合わせて、HCAI 率を施設の管理職 / 幹部および医療従事者に報告していますか。",
+        "en": "Are HCAI rates presented to facility leadership and to health-care workers in conjunction with hand hygiene compliance rates?"
+    },
+    "3.5": {
+        "ja": "施設において、手指衛生遵守率の改善に対する障害や HCAI の原因を理解するための体系的な評価が行われ、また、評価結果は管理職 / 幹部に報告されていますか。",
+        "en": "Is structured evaluation undertaken to understand the obstacles to optimal hand hygiene compliance and the causes of HCAI at the local level, and results reported to the facility leadership?"
+    },
+    "4.1": {
+        "ja": "施設の医療従事者のデザインによる新しいポスターを作るシステムがありますか。",
+        "en": "Is a system in place for creation of new posters designed by local health-care workers?"
+    },
+    "4.2": {
+        "ja": "自施設が作ったポスターが他施設でも使用されていますか。",
+        "en": "Are posters created in your facility used in other facilities?"
+    },
+    "4.3": {
+        "ja": "自施設において、手指衛生を喚起する革新的な方法が開発され試験されましたか。",
+        "en": "Have innovative types of hand hygiene reminders been developed and tested at the facility?"
+    },
+    "5.1": {
+        "ja": "WHO ガイドラインによりさらなる検討の必要性が示された課題を解決するために、施設で手指衛生に関する研究計画が作成されていますか。",
+        "en": "Has a local hand hygiene research agenda addressing issues identified by the WHO Guidelines as requiring further investigation been developed?"
+    },
+    "5.2": {
+        "ja": "手指衛生分野において、自施設が積極的に論文化や学会発表（口頭またはポスター）を行ってきましたか。",
+        "en": "Has your facility participated actively in publications or conference presentations (oral or poster) in the area of hand hygiene?"
+    },
+    "5.3": {
+        "ja": "医療従事者の手指衛生喚起に、患者が関与していますか。",
+        "en": "Are patients invited to remind health-care workers to perform hand hygiene?"
+    },
+    "5.4": {
+        "ja": "患者および訪問者に正しい手指衛生法の教育をしていますか。",
+        "en": "Are patients and visitors educated to correctly perform hand hygiene?"
+    },
+    "5.5": {
+        "ja": "自施設は国の手指衛生キャンペーン（もし存在するならば）に貢献し、これを支援していますか。",
+        "en": "Does your facility contribute to and support the national hand hygiene campaign (if existing)?"
+    },
+    "5.6": {
+        "ja": "手指衛生キャンペーンの効果に関する評価は、感染対策プログラムの将来計画に組み込まれていますか。",
+        "en": "Is impact evaluation of the hand hygiene campaign incorporated into forward planning of the infection control programme?"
+    },
+    "5.7": {
+        "ja": "自施設では、施設全体の手指衛生遵守率を改善するために年間目標を設定していますか。",
+        "en": "Does your facility set an annual target for improvement of hand hygiene compliance facility-wide?"
+    },
+    "5.8": {
+        "ja": "目標を設定している場合、昨年度の目標は達成されましたか。",
+        "en": "If the facility has such a target, was it achieved last year?"
+    }
+}
+
+# Initialize session state
+if "df_processed" not in st.session_state:
+    st.session_state.df_processed = None
+if "selected_facility_code" not in st.session_state:
+    st.session_state.selected_facility_code = None
+if "selected_facility_name" not in st.session_state:
+    st.session_state.selected_facility_name = None
+if "selected_month" not in st.session_state:
+    st.session_state.selected_month = None
+if "selected_year" not in st.session_state:
+    st.session_state.selected_year = None
+if "analysis_unit" not in st.session_state:
+    st.session_state.analysis_unit = "Year" # Month or Year
+if "agg_method" not in st.session_state:
+    st.session_state.agg_method = "End" # End, Start, Mean
+if "facility_options" not in st.session_state:
+    st.session_state.facility_options = []
+if "facility_codes" not in st.session_state:
+    st.session_state.facility_codes = {}
+if "months" not in st.session_state:
+    st.session_state.months = []
+if "years" not in st.session_state:
+    st.session_state.years = []
+if "col_mapping" not in st.session_state:
+    st.session_state.col_mapping = {}
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+if "chart_theme" not in st.session_state:
+    st.session_state.chart_theme = "Light"
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = 0
+if "first_interaction_consumed" not in st.session_state:
+    st.session_state.first_interaction_consumed = False
+if "last_selected_tab" not in st.session_state:
+    st.session_state.last_selected_tab = None
+if "process_files" not in st.session_state:
+    st.session_state.process_files = False
+if "uploaded_files_to_process" not in st.session_state:
+    st.session_state.uploaded_files_to_process = None
+
+# Reset function (サイドバーで使用するため、先に定義)
+def reset_to_top():
+    """セッション状態をリセットしてTOP画面に戻る"""
+    st.session_state.df_processed = None
+    st.session_state.selected_facility_code = None
+    st.session_state.selected_facility_name = None
+    st.session_state.selected_month = None
+    st.session_state.selected_year = None
+    st.session_state.facility_options = []
+    st.session_state.facility_codes = {}
+    st.session_state.months = []
+    st.session_state.years = []
+    st.session_state.col_mapping = {}
+    st.session_state.uploader_key += 1  # ファイルアップローダーをリセット
+    if "last_uploaded_file" in st.session_state:
+        del st.session_state.last_uploaded_file
+    if "last_uploaded_files" in st.session_state:
+        del st.session_state.last_uploaded_files
+    if "uploaded_files_to_process" in st.session_state:
+        del st.session_state.uploaded_files_to_process
+    if "uploaded_file_names_display" in st.session_state:
+        del st.session_state.uploaded_file_names_display
+
+# Sidebar: Configurations
+with st.sidebar:
+    st.markdown("""
+    <div style="text-align: center; margin-bottom: 20px;">
+        <div style="font-size: 3em;">🏥</div>
+        <div style="font-size: 2em; font-weight: 800; line-height: 1.2;">IPC Calc Tools</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 言語設定を先に取得（ボタンのテキストに使用するため）
+    # デフォルトで日本語を使用（後で設定で変更可能）
+    if "lang_selector" not in st.session_state:
+        st.session_state.lang_selector = "日本語"
+    lang = st.session_state.get("lang_selector", "日本語")
+    L = TRANS["ja"] if lang == "日本語" else TRANS["en"]
+    
+    # TOP画面に戻るボタン（常時表示、タイトルの下）
+    if st.sidebar.button(L["back_to_top"], help=L["back_to_top_help"], use_container_width=True):
+        reset_to_top()
+        st.rerun()
+    
+    st.divider()
+
+# Plotly Template
+plotly_template = "plotly" if st.session_state.chart_theme == "Light" else "plotly_dark"
+
+# Plotly Config
+plotly_config = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "modeBarButtonsToRemove": [
+        "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+        "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines"
+    ]
+}
+
+# --- Callbacks for UI Sync ---
+def on_facility_change():
+    display_val = st.session_state.facility_select_main
+    code = st.session_state.facility_codes.get(display_val)
+    st.session_state.selected_facility_code = code
+    st.session_state.selected_facility_name = display_val.split(" (")[0] if " (" in display_val else display_val
+
+def on_month_change():
+    if "month_select_main" in st.session_state:
+        st.session_state.selected_month = st.session_state.month_select_main
+    else:
+        st.session_state.selected_month = None
+    # 初回の操作を「消費」する（タブの状態リセットを防ぐため）
+    if not st.session_state.first_interaction_consumed:
+        st.session_state.first_interaction_consumed = True
+
+def on_year_change():
+    if "year_select_main" in st.session_state:
+        st.session_state.selected_year = st.session_state.year_select_main
+    else:
+        st.session_state.selected_year = None
+    # 初回の操作を「消費」する（タブの状態リセットを防ぐため）
+    if not st.session_state.first_interaction_consumed:
+        st.session_state.first_interaction_consumed = True
+
+def on_unit_change():
+    label = st.session_state.unit_radio_main
+    # 言語に応じたラベル比較
+    is_month = (label == TRANS["ja"]["unit_month"] or label == TRANS["en"]["unit_month"])
+    st.session_state.analysis_unit = "Month" if is_month else "Year"
+
+def on_agg_change():
+    # 実際の更新はメインループ内で行う
+    pass
+
+# --- 2. Helper Functions ---
+def classify_area(question):
+    """質問をAreaに分類"""
+    if pd.isna(question) or question == "":
+        return None
+    q_str = str(question).strip()
+    
+    # リーダーシップ (Leadership)
+    if q_str.startswith("リ") or q_str.startswith("Lea") or "リーダーシップ" in q_str:
+        return "Leadership"
+    
+    # Area 1: System Change (1.1... or 追加/Facility...)
+    if q_str.startswith("1") or q_str.startswith("追加") or q_str.startswith("Add"):
+        return "Area1"
+    # Area 2: Training & Education
+    elif q_str.startswith("2"):
+        return "Area2"
+    # Area 3: Evaluation & Feedback
+    elif q_str.startswith("3"):
+        return "Area3"
+    # Area 4: Reminders
+    elif q_str.startswith("4"):
+        return "Area4"
+    # Area 5: Safety Climate
+    elif q_str.startswith("5"):
+        return "Area5"
+    
+    return None
+
+def get_level_info(score, labels):
+    """スコアに応じた判定レベルと色を返します"""
+    if score < 126:
+        return labels[0], "#dc3545"  # Red (Inadequate)
+    elif score < 251:
+        return labels[1], "#ffc107"  # Yellow (Basic)
+    elif score < 376:
+        return labels[2], "#17a2b8"  # Blue (Intermediate)
+    else:
+        return labels[3], "#28a745"  # Green (Advanced)
+
+def detect_encoding(file_content_bytes):
+    """エンコーディングを自動判定"""
+    encodings = ['utf-8', 'shift_jis', 'cp932', 'utf-8-sig']
+    for enc in encodings:
+        try:
+            file_content_bytes.decode(enc)
+            return enc
+        except:
+            continue
+    return 'utf-8'
+
+@st.cache_data
+def load_data(file):
+    """文字コードを自動判定して読み込みます"""
+    try:
+        file.seek(0)
+        file_bytes = file.read()
+        file.seek(0)
+        encoding = detect_encoding(file_bytes)
+        file.seek(0)
+        return pd.read_csv(file, encoding=encoding)
+    except Exception as e:
+        st.error(f"Error loading file: {str(e)}")
+        return None
+
+def load_multiple_files(uploaded_files):
+    """複数ファイルを読み込んで結合します"""
+    dfs = []
+    file_names = []
+    
+    for uploaded_file in uploaded_files:
+        df = load_data(uploaded_file)
+        if df is not None:
+            dfs.append(df)
+            file_names.append(uploaded_file.name)
+    
+    if not dfs:
+        return None, []
+    
+    # すべてのDataFrameを結合
+    df_combined = pd.concat(dfs, ignore_index=True)
+    return df_combined, file_names
+
+def remove_duplicates(df, code_col, date_col, quest_col):
+    """処方箋発行医療機関コード、登録年月、質問の組み合わせで重複を削除（最新の登録年月のデータを保持）"""
+    if df.empty:
+        return df
+    
+    # 重複チェック用のキーカラムを確認
+    key_cols = []
+    if code_col in df.columns:
+        key_cols.append(code_col)
+    if date_col in df.columns:
+        key_cols.append(date_col)
+    if quest_col in df.columns:
+        key_cols.append(quest_col)
+    
+    if not key_cols:
+        return df
+    
+    # 重複を削除（最新の登録年月のデータを保持）
+    # 登録年月で降順ソートして、最初のデータを保持
+    if date_col in df.columns:
+        # 登録年月を数値としてソート（文字列としても比較可能だが、数値の方が確実）
+        df_sorted = df.copy()
+        # 登録年月を数値に変換（エラーが発生した場合は元の値を保持）
+        try:
+            df_sorted['_sort_date'] = pd.to_numeric(df_sorted[date_col], errors='coerce')
+            df_sorted = df_sorted.sort_values(by='_sort_date', ascending=False, na_position='last')
+            df_sorted = df_sorted.drop(columns=['_sort_date'])
+        except:
+            # 数値変換に失敗した場合は文字列としてソート
+            df_sorted = df_sorted.sort_values(by=date_col, ascending=False, na_position='last')
+        
+        df = df_sorted.drop_duplicates(subset=key_cols, keep='first')
+        # 元の順序に戻す（必要に応じて）
+        df = df.sort_index(ascending=True)
+    else:
+        # 登録年月がない場合は、インデックスの降順でソートして最初のデータを保持
+        df = df.sort_index(ascending=False)
+        df = df.drop_duplicates(subset=key_cols, keep='first')
+        df = df.sort_index(ascending=True)
+    
+    return df
+
+def process_raw_data(df_raw, score_col, quest_col, date_col):
+    """生データを処理してDataFrameを返す"""
+    # 数値変換（空白を削除してから変換、NaNはそのまま保持）
+    if score_col in df_raw.columns:
+        df_raw[score_col] = df_raw[score_col].astype(str).str.strip()
+        # errors='coerce'で数値以外はNaNになる
+        df_raw[score_col] = pd.to_numeric(df_raw[score_col], errors="coerce")
+        # ここでfillna(0)はしない
+    
+    # エリア分類
+    df_raw["Area"] = df_raw[quest_col].apply(classify_area)
+    
+    # 分類不能な行は除外
+    df = df_raw.dropna(subset=["Area"]).copy()
+    
+    # 年月の正規化と文字列化
+    if date_col in df.columns:
+        df[date_col] = df[date_col].astype(str).str.replace("/", "").str.replace("-", "").str.replace(".", "").str.strip()
+        # 4桁の年を取得
+        df["Year"] = df[date_col].str[:4]
+    
+    return df
+
+def get_aggregated_data(df, facility_code, target_date, unit, method, code_col, fac_col, date_col, score_col, quest_col):
+    """
+    指定された条件でデータをフィルタリング・集計する
+    unit: "Month" or "Year"
+    method: "End", "Start", "Mean" (Yearのみ有効)
+    """
+    # target_dateがNoneの場合、またはfacility_codeがNoneの場合は空のDataFrameを返す
+    if target_date is None or facility_code is None:
+        return pd.DataFrame()
+    
+    # 1. 施設でフィルタリング
+    df_work = df.copy()  # 元のデータフレームを変更しないようにコピーを作成
+    if code_col in df_work.columns:
+        # コード列を文字列に変換して比較（型の不一致を防ぐ）
+        df_work[code_col] = df_work[code_col].astype(str)
+        facility_code_str = str(facility_code)
+        df_fac = df_work[df_work[code_col] == facility_code_str].copy()
+    else:
+        # facility_codeが名前の場合のフォールバック
+        facility_code_str = str(facility_code)
+        df_work[fac_col] = df_work[fac_col].astype(str)
+        df_fac = df_work[df_work[fac_col] == facility_code_str].copy()
+        
+    if df_fac.empty:
+        return df_fac
+
+    # 2. 期間でフィルタリング・集計
+    if unit == "Month":
+        # 月次：単純にその月を選択
+        return df_fac[df_fac[date_col] == target_date]
+    
+    else: # Year
+        # 年次：その年のデータを選択
+        df_year = df_fac[df_fac["Year"] == target_date].copy()
+        
+        if df_year.empty:
+            return df_year
+            
+        if method == "End":
+            # 年の最後（日付で降順ソートして、質問ごとに最初のものを取得＝最新）
+            df_year = df_year.sort_values(by=date_col, ascending=False)
+            return df_year.drop_duplicates(subset=[quest_col], keep="first")
+            
+        elif method == "Start":
+            # 年の初め（日付で昇順ソートして、質問ごとに最初のものを取得＝最古）
+            df_year = df_year.sort_values(by=date_col, ascending=True)
+            return df_year.drop_duplicates(subset=[quest_col], keep="first")
+            
+        elif method == "Mean":
+            # 平均：質問ごとに平均を算出
+            numeric_cols = [score_col]
+            group_cols = [quest_col, "Area", "Year"]
+            
+            df_mean = df_year.groupby(group_cols)[numeric_cols].mean().reset_index()
+            
+            # メタデータを復元
+            if len(df_year) > 0:
+                meta_info = df_year.iloc[0].to_dict()
+                for col in df_year.columns:
+                    if col not in df_mean.columns:
+                        df_mean[col] = meta_info.get(col)
+            
+            return df_mean
+            
+    return pd.DataFrame()
+
+# --- 3. Main Application Logic ---
+st.title(L["title"])
+st.caption(L["subtitle"])
+
+# 言語設定を再取得（設定expanderで変更された可能性があるため）
+lang = st.session_state.get("lang_selector", "日本語")
+L = TRANS["ja"] if lang == "日本語" else TRANS["en"]
+
+# Sidebar: File Upload（常に表示）
+target_filename = "ICT関連情報_WHO手指衛生自己評価フレームワーク_詳細.csv"
+
+st.sidebar.header("Data Input")
+
+# ファイル名フィルタリング設定
+use_filename_filter = st.sidebar.checkbox(
+    f"ファイル名でフィルタリング: {target_filename}",
+    value=True,
+    help="チェックを入れると、指定されたファイル名のファイルのみを読み込みます。複数フォルダから同じファイル名のファイルを読み込む場合に便利です。"
+)
+
+help_text = f"{L['upload_help']}\\n\\n同じファイル名でも複数ファイルをアップロードできます。\\nファイル名フィルタリングが有効な場合、'{target_filename}'というファイル名のファイルのみが読み込まれます。"
+uploaded_files = st.sidebar.file_uploader(
+    L["upload_label"], 
+    type=["csv"], 
+    help=help_text, 
+    key=f"file_uploader_{st.session_state.uploader_key}",
+    accept_multiple_files=True
+)
+st.sidebar.caption(L["memory_warning"])
+
+# データ処理フラグ
+data_ready = False
+
+# ファイルが新しくアップロードされた場合、ファイル情報を保存（処理は実行ボタンで開始）
+if uploaded_files is not None and len(uploaded_files) > 0:
+    # ファイル名フィルタリングを適用
+    if use_filename_filter:
+        filtered_files = [f for f in uploaded_files if f.name == target_filename]
+        if len(filtered_files) == 0:
+            st.sidebar.warning(f"⚠️ ファイル名 '{target_filename}' に一致するファイルが見つかりませんでした。{len(uploaded_files)}個のファイルが選択されましたが、すべてスキップされました。")
+            uploaded_files = []
+        elif len(filtered_files) < len(uploaded_files):
+            skipped_count = len(uploaded_files) - len(filtered_files)
+            st.sidebar.info(f"ℹ️ {len(filtered_files)}個のファイルが選択されました（{skipped_count}個のファイルをスキップしました）。")
+            uploaded_files = filtered_files
+        else:
+            uploaded_files = filtered_files
+    
+    if len(uploaded_files) > 0:
+        # アップロードされたファイル名のリストを作成（ソートして比較）
+        uploaded_file_names = sorted([f.name for f in uploaded_files])
+        uploaded_file_names_str = ",".join(uploaded_file_names)
+        
+        # ファイルが変更された場合、セッション状態をリセット
+        if "last_uploaded_files" not in st.session_state or st.session_state.last_uploaded_files != uploaded_file_names_str:
+            # 新しいファイルが選択された場合、既存のデータをリセット
+            st.session_state.df_processed = None
+            st.session_state.selected_facility_code = None
+            st.session_state.selected_facility_name = None
+            st.session_state.selected_month = None
+            st.session_state.selected_year = None
+            st.session_state.last_uploaded_files = uploaded_file_names_str
+            st.session_state.uploaded_files_to_process = uploaded_files  # 処理待ちのファイルを保存
+            # 初回の操作を「消費」するフラグをリセット（新しいファイルのため）
+            st.session_state.first_interaction_consumed = False
+            # 処理済みのファイル名表示もクリア
+            if "uploaded_file_names_display" in st.session_state:
+                del st.session_state.uploaded_file_names_display
+            # 処理フラグもリセット
+            st.session_state.process_files = False
+        
+        # アップロードされたファイル情報を表示
+        file_names_to_display = None
+        if "uploaded_files_to_process" in st.session_state and st.session_state.uploaded_files_to_process:
+            # 処理前：ファイルオブジェクトからファイル名を取得
+            file_names_to_display = [f.name for f in st.session_state.uploaded_files_to_process]
+        elif "uploaded_file_names_display" in st.session_state and st.session_state.uploaded_file_names_display:
+            # 処理後：保存されたファイル名を使用
+            file_names_to_display = st.session_state.uploaded_file_names_display
+        
+        if file_names_to_display:
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("### 📁 アップロードされたファイル")
+            for i, file_name in enumerate(file_names_to_display, 1):
+                st.sidebar.text(f"{i}. {file_name}")
+            st.sidebar.markdown(f"**合計: {len(file_names_to_display)}個のファイル**")
+            
+            # 実行ボタン（データ未処理時のみ表示）
+            if st.session_state.df_processed is None:
+                if st.sidebar.button("🚀 集計を開始", type="primary", use_container_width=True):
+                    st.session_state.process_files = True
+                    st.rerun()
+
+# 実行ボタンが押された場合、ファイルを処理
+if st.session_state.get("process_files", False) and "uploaded_files_to_process" in st.session_state and st.session_state.uploaded_files_to_process:
+    uploaded_files_to_process = st.session_state.uploaded_files_to_process
+    st.session_state.process_files = False  # フラグをリセット
+    
+    # ファイルサイズチェック（500MB制限）
+    MAX_FILE_SIZE_MB = 500
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+    total_size = sum(file.size for file in uploaded_files_to_process)
+    total_size_mb = total_size / (1024 * 1024)
+    
+    if total_size > MAX_FILE_SIZE_BYTES:
+        st.sidebar.error(L["err_file_size_exceeded"])
+        st.sidebar.error(L["err_file_size_detail"].format(total_mb=total_size_mb))
+        # 処理を中断
+        if "uploaded_files_to_process" in st.session_state:
+            del st.session_state.uploaded_files_to_process
+        st.session_state.process_files = False  # エラー時はフラグをリセット
+    else:
+        # ファイルの処理
+        df_raw = None
+        file_names = []
+        
+        try:
+            # 複数ファイルを読み込んで結合
+            if len(uploaded_files_to_process) == 1:
+                df_raw = load_data(uploaded_files_to_process[0])
+                file_names = [uploaded_files_to_process[0].name]
+            else:
+                df_raw, file_names = load_multiple_files(uploaded_files_to_process)
+                if df_raw is not None:
+                    st.sidebar.success(f"✅ {len(uploaded_files_to_process)}個のファイルを読み込みました: {', '.join(file_names)}")
+        except Exception as e:
+            st.sidebar.error(f"❌ ファイル読み込み中にエラーが発生しました: {str(e)}")
+            import traceback
+            st.sidebar.code(traceback.format_exc())
+            if "uploaded_files_to_process" in st.session_state:
+                del st.session_state.uploaded_files_to_process
+            df_raw = None
+            st.session_state.process_files = False  # エラー時はフラグをリセット
+        
+        if df_raw is not None:
+            try:
+                # カラム名の検出
+                cols = df_raw.columns
+                score_col = "スコア" if "スコア" in cols else ([c for c in cols if "core" in c.lower() or "score" in c.lower()] + ["Score"])[0]
+                quest_col = "質問" if "質問" in cols else ([c for c in cols if "question" in c.lower()] + ["Question"])[0]
+                date_col = "登録年月" if "登録年月" in cols else ([c for c in cols if "date" in c.lower() or "month" in c.lower()] + ["Date"])[0]
+                fac_col = "施設名" if "施設名" in cols else ([c for c in cols if "facility" in c.lower()] + ["Facility"])[0]
+                code_col = "処方箋発行医療機関コード" if "処方箋発行医療機関コード" in cols else ([c for c in cols if "code" in c.lower() or "id" in c.lower()] + ["Code"])[0]
+                
+                # データ処理
+                df = process_raw_data(df_raw, score_col, quest_col, date_col)
+                
+                # 重複データの削除（処方箋発行医療機関コード、登録年月、質問の組み合わせで重複を削除）
+                df_before = len(df)
+                df = remove_duplicates(df, code_col, date_col, quest_col)
+                df_after = len(df)
+                if df_before > df_after:
+                    st.sidebar.info(f"ℹ️ 重複データを削除しました: {df_before}行 → {df_after}行 ({df_before - df_after}行削除)")
+                
+                # ID列を文字列に変換
+                if code_col in df.columns:
+                    df[code_col] = df[code_col].astype(str).str.replace(r"\.0$", "", regex=True)
+                
+                # ドロップダウン用リストの作成
+                if fac_col in df.columns and code_col in df.columns:
+                    facilities = df[[code_col, fac_col]].drop_duplicates()
+                    facility_options = [f"{row[fac_col]} ({row[code_col]})" for _, row in facilities.iterrows()]
+                    facility_codes = {f"{row[fac_col]} ({row[code_col]})": row[code_col] for _, row in facilities.iterrows()}
+                else:
+                    facilities = df[fac_col].unique() if fac_col in df.columns else ["Unknown"]
+                    facility_options = list(facilities)
+                    facility_codes = {f: f for f in facility_options}
+                
+                months = sorted(df[date_col].unique()) if date_col in df.columns else ["Unknown"]
+                years = sorted(df["Year"].unique()) if "Year" in df.columns else ["Unknown"]
+                
+                # セッション状態に保存
+                st.session_state.df_processed = df
+                st.session_state.facility_options = facility_options
+                st.session_state.facility_codes = facility_codes
+                st.session_state.months = months
+                st.session_state.years = years
+                st.session_state.col_mapping = {
+                    "score_col": score_col,
+                    "quest_col": quest_col,
+                    "date_col": date_col,
+                    "fac_col": fac_col,
+                    "code_col": code_col
+                }
+                
+                # デフォルト値の設定（データ処理が完了した後）
+                if st.session_state.selected_facility_code is None and facility_options:
+                    st.session_state.selected_facility_code = facility_codes.get(facility_options[0] if facility_options else None)
+                    st.session_state.selected_facility_name = facility_options[0].split(" (")[0] if facility_options and " (" in facility_options[0] else (facility_options[0] if facility_options else None)
+                if st.session_state.selected_month is None and months:
+                    st.session_state.selected_month = months[-1] if months else None
+                if st.session_state.selected_year is None and years:
+                    st.session_state.selected_year = years[-1] if years else None
+                
+                # 処理完了後、ファイル名情報を保存（表示のため）
+                if "uploaded_files_to_process" in st.session_state and st.session_state.uploaded_files_to_process:
+                    st.session_state.uploaded_file_names_display = [f.name for f in st.session_state.uploaded_files_to_process]
+                    # 処理待ちのファイルオブジェクトは削除（メモリ節約のため）
+                    del st.session_state.uploaded_files_to_process
+                
+                st.sidebar.success("✅ データ処理が完了しました！")
+            except Exception as e:
+                st.sidebar.error(f"❌ データ処理中にエラーが発生しました: {str(e)}")
+                import traceback
+                st.sidebar.code(traceback.format_exc())
+                if "uploaded_files_to_process" in st.session_state:
+                    del st.session_state.uploaded_files_to_process
+                st.session_state.process_files = False  # エラー時はフラグをリセット
+        else:
+            # df_rawがNoneの場合（ファイル読み込みに失敗した場合）
+            st.sidebar.error("❌ データの読み込みに失敗しました。ファイル形式を確認してください。")
+            if "uploaded_files_to_process" in st.session_state:
+                del st.session_state.uploaded_files_to_process
+            st.session_state.process_files = False  # エラー時はフラグをリセット
+
+# 設定expander（サイドバーの一番下に配置、常に表示）
+st.sidebar.divider()
+with st.sidebar.expander("⚙️ 設定 / Settings", expanded=False):
+    # Language Selection
+    st.markdown("### Language / 言語")
+    lang = st.radio("Language", ["日本語", "English"], label_visibility="collapsed", key="lang_selector")
+    L = TRANS["ja"] if lang == "日本語" else TRANS["en"]
+    
+    st.divider()
+    
+    # Chart Theme Selection
+    st.markdown(f"### {L['chart_theme']}")
+    theme_options = [L["theme_light"], L["theme_dark"]]
+    
+    # セッション状態から現在のインデックスを計算
+    current_theme_idx = 0 if st.session_state.chart_theme == "Light" else 1
+    
+    # ラジオボタンを表示
+    selected_theme_label = st.radio(
+        L["chart_theme"], 
+        theme_options, 
+        index=current_theme_idx, 
+        label_visibility="collapsed", 
+        key="theme_selector_radio"
+    )
+    
+    # 選択されたラベルに基づいてテーマを決定
+    new_theme = "Light" if selected_theme_label == L["theme_light"] else "Dark"
+    
+    # セッション状態を更新（もし変更があれば）
+    if st.session_state.chart_theme != new_theme:
+        st.session_state.chart_theme = new_theme
+        # st.rerun()を削除して、自動更新に任せる（タブの選択状態を保持するため）
+        
+    st.caption(L["theme_note"])
+
+# データがセッションにある場合（言語切り替え時もここを通る）
+if st.session_state.df_processed is not None:
+    data_ready = True
+    
+    # セッション状態からデータを復元
+    df = st.session_state.df_processed
+    score_col = st.session_state.col_mapping.get("score_col", "スコア")
+    quest_col = st.session_state.col_mapping.get("quest_col", "質問")
+    date_col = st.session_state.col_mapping.get("date_col", "登録年月")
+    fac_col = st.session_state.col_mapping.get("fac_col", "施設名")
+    code_col = st.session_state.col_mapping.get("code_col", "処方箋発行医療機関コード")
+    facility_options = st.session_state.facility_options
+    facility_codes = st.session_state.facility_codes
+    months = st.session_state.months
+    years = st.session_state.get("years", [])
+    
+    # --- フィルター UI (Main Area) ---
+    with st.container():
+        # 1行目: 分析単位 & 集計方法
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.markdown(f"##### {L['analysis_unit']}")
+            unit_options = [L["unit_month"], L["unit_year"]]
+            unit_idx = 0 if st.session_state.analysis_unit == "Month" else 1
+            
+            st.radio(
+                L["analysis_unit"], 
+                unit_options, 
+                index=unit_idx, 
+                label_visibility="collapsed", 
+                horizontal=True, 
+                key="unit_radio_main",
+                on_change=on_unit_change
+            )
+        
+        with c2:
+            if st.session_state.analysis_unit == "Year":
+                st.markdown(f"##### {L['agg_method']}")
+                agg_options = {
+                    L["agg_end"]: "End",
+                    L["agg_start"]: "Start",
+                    L["agg_mean"]: "Mean"
+                }
+                current_agg = st.session_state.agg_method
+                agg_values = list(agg_options.values())
+                try:
+                    agg_idx = agg_values.index(current_agg)
+                except ValueError:
+                    agg_idx = 0
+                
+                selected_agg_label = st.selectbox(
+                    L["agg_method"],
+                    list(agg_options.keys()),
+                    index=agg_idx,
+                    label_visibility="collapsed",
+                    key="agg_select_main"
+                )
+                # 選択結果を反映
+                st.session_state.agg_method = agg_options[selected_agg_label]
+        
+        st.divider()
+        
+        # 2行目: 施設選択 & 年月選択
+        col1, col2 = st.columns(2)
+        with col1:
+            # 現在選択されている施設のインデックスを取得
+            current_facility_idx = 0
+            if st.session_state.selected_facility_code and facility_options:
+                for idx, opt in enumerate(facility_options):
+                    if facility_codes.get(opt) == st.session_state.selected_facility_code:
+                        current_facility_idx = idx
+                        break
+            
+            st.selectbox(
+                L["select_facility"], 
+                facility_options, 
+                index=current_facility_idx,
+                key="facility_select_main",
+                on_change=on_facility_change
+            )
+            # 変数は on_change で更新済みなので、ここでは session_state から読み出す
+            selected_facility_code = st.session_state.selected_facility_code
+            selected_facility_name = st.session_state.selected_facility_name
+        
+        with col2:
+            if st.session_state.analysis_unit == "Month":
+                # 月選択
+                current_month_idx = 0
+                if st.session_state.selected_month and months:
+                    try:
+                        current_month_idx = months.index(st.session_state.selected_month)
+                    except (ValueError, AttributeError):
+                        current_month_idx = len(months) - 1 if months else 0
+                
+                if months:
+                    st.selectbox(
+                        L["select_month"], 
+                        months, 
+                        index=current_month_idx, 
+                        key="month_select_main",
+                        on_change=on_month_change
+                    )
+                    # コールバック後も最新の値を取得
+                    if "month_select_main" in st.session_state:
+                        target_date = st.session_state.month_select_main
+                    else:
+                        target_date = st.session_state.selected_month
+                else:
+                    st.info("利用可能な月データがありません")
+                    target_date = None
+            else:
+                # 年選択
+                current_year_idx = 0
+                if st.session_state.selected_year and years:
+                    try:
+                        current_year_idx = years.index(st.session_state.selected_year)
+                    except (ValueError, AttributeError):
+                        current_year_idx = len(years) - 1 if years else 0
+                        
+                if years:
+                    st.selectbox(
+                        L["select_year"],
+                        years,
+                        index=current_year_idx,
+                        key="year_select_main",
+                        on_change=on_year_change
+                    )
+                    # コールバック後も最新の値を取得
+                    if "year_select_main" in st.session_state:
+                        target_date = st.session_state.year_select_main
+                    else:
+                        target_date = st.session_state.selected_year
+                else:
+                    st.info("利用可能な年データがありません")
+                    target_date = None
+    
+    # --- フィルター適用 & 集計 ---
+    try:
+        # デフォルト値の再確認（セッション状態から取得）
+        if selected_facility_code is None and facility_options:
+            selected_facility_code = facility_codes.get(facility_options[0] if facility_options else None)
+            st.session_state.selected_facility_code = selected_facility_code
+            st.session_state.selected_facility_name = facility_options[0].split(" (")[0] if facility_options and " (" in facility_options[0] else (facility_options[0] if facility_options else None)
+        
+        if target_date is None:
+            if st.session_state.analysis_unit == "Month" and months:
+                target_date = months[-1] if months else None
+                st.session_state.selected_month = target_date
+            elif st.session_state.analysis_unit == "Year" and years:
+                target_date = years[-1] if years else None
+                st.session_state.selected_year = target_date
+        
+        # target_dateがNoneの場合、またはselected_facility_codeがNoneの場合は空のDataFrameを返す
+        if target_date is None or selected_facility_code is None:
+            if target_date is None:
+                st.warning("⚠️ 年月が選択されていません。デフォルト値を設定してください。")
+            if selected_facility_code is None:
+                st.warning("⚠️ 施設が選択されていません。デフォルト値を設定してください。")
+            df_filtered = pd.DataFrame()
+        else:
+            df_filtered = get_aggregated_data(
+                df, 
+                selected_facility_code, 
+                target_date, 
+                st.session_state.analysis_unit, 
+                st.session_state.agg_method,
+                code_col, fac_col, date_col, score_col, quest_col
+            )
+    except Exception as e:
+        st.error(f"データ処理中にエラーが発生しました: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        df_filtered = pd.DataFrame()
+    
+    if df_filtered.empty:
+        st.info(L["no_data"])
+    else:
+        # --- スコア計算 ---
+        # データ欠損のチェック
+        if df_filtered[score_col].isna().any():
+            null_count = df_filtered[score_col].isna().sum()
+            st.warning(f"⚠️ {null_count} 件のデータが欠損しています（スコアが空白、または数値ではありません）。これらは 0点 として計算されます。")
+        
+        # 計算用に0埋めしたデータフレームを作成
+        try:
+            df_calc = df_filtered.copy()
+            df_calc[score_col] = df_calc[score_col].fillna(0)
+            
+            # Area列が存在することを確認
+            if "Area" not in df_calc.columns:
+                st.error("データに'Area'列が存在しません。データ処理に問題があります。")
+                df_calc = pd.DataFrame()
+            
+            if not df_calc.empty:
+                area_scores = df_calc[df_calc["Area"] != "Leadership"].groupby("Area")[score_col].sum()
+                leadership_data = df_calc[df_calc["Area"] == "Leadership"]
+                leadership_score = float(leadership_data[score_col].sum()) if len(leadership_data) > 0 else 0.0
+                scores_list = [float(area_scores.get(f"Area{i}", 0)) for i in range(1, 6)]
+                total_score = sum(scores_list)
+            else:
+                area_scores = pd.Series()
+                leadership_data = pd.DataFrame()
+                leadership_score = 0.0
+                scores_list = [0.0] * 5
+                total_score = 0.0
+        except Exception as e:
+            st.error(f"スコア計算中にエラーが発生しました: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+            area_scores = pd.Series()
+            leadership_data = pd.DataFrame()
+            leadership_score = 0.0
+            scores_list = [0.0] * 5
+            total_score = 0.0
+        
+        # --- タブ UI ---
+        # タブの選択状態をセッション状態で明示的に管理
+        tab_names = [L["tab_dashboard"], L["tab_timeseries"], L["tab_comparison"], L["tab_leadership"]]
+        
+        # 現在のタブインデックスを取得（セッション状態から、デフォルトは0）
+        if "tab_selector" not in st.session_state:
+            st.session_state.tab_selector = 0
+        
+        # タブ選択用のラジオボタン（水平配置）
+        selected_tab_idx = st.radio(
+            "タブ選択",
+            options=range(len(tab_names)),
+            format_func=lambda x: tab_names[x],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="tab_selector",
+            index=st.session_state.tab_selector
+        )
+        
+        # セッション状態を更新（tab_selectorは自動的に更新されるが、active_tabも更新）
+        st.session_state.active_tab = selected_tab_idx
+        
+        # 選択されたタブに応じてコンテンツを表示
+        if selected_tab_idx == 0:
+            # --- Tab 1: Dashboard ---
+            level_label, level_color = get_level_info(total_score, L["level_labels"])
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric(L["total_score"], f"{int(total_score)} / 500")
+            
+            m2.markdown(
+                f"<div style='text-align: center;'><span style='background-color:{level_color}; padding:4px 12px; border-radius:16px; color:white; font-weight:bold; font-size:1.2em'>{level_label}</span></div>", 
+                unsafe_allow_html=True
+            )
+            
+            if total_score >= 376:
+                m3.metric(L["leadership_score"], f"{int(leadership_score)} / 100", L["eligible"])
+            else:
+                m3.metric(L["leadership_score"], "-", L["not_eligible"])
+            
+            st.divider()
+            
+            # グラフのキー生成用の安全な値
+            safe_target_date = str(target_date) if target_date is not None else "none"
+            safe_facility_code = str(selected_facility_code) if selected_facility_code is not None else "none"
+            
+            c1, c2 = st.columns([3, 2])
+            
+            with c1:
+                fig_radar = go.Figure()
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=scores_list,
+                    theta=L["area_labels"],
+                    fill="toself",
+                    name=selected_facility_name,
+                    line_color="#667eea",
+                    fillcolor="rgba(102, 126, 234, 0.3)"
+                ))
+                fig_radar.update_layout(
+                    template=plotly_template,
+                    dragmode=False,
+                    polar=dict(
+                        radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=10)),
+                        angularaxis=dict(tickfont=dict(size=12))
+                    ),
+                    title=dict(text=L["radar_title"], x=0.5),
+                    margin=dict(l=60, r=60, t=40, b=40),
+                    height=450
+                )
+                st.plotly_chart(fig_radar, use_container_width=True, config=plotly_config, key=f"radar_{safe_target_date}_{safe_facility_code}")
+                
+            with c2:
+                fig_donut = go.Figure(data=[go.Pie(
+                    labels=["Obtained", "Remaining"],
+                    values=[total_score, 500-total_score],
+                    hole=.7,
+                    marker_colors=[level_color, "#f0f2f6"],
+                    textinfo="none",
+                    sort=False,
+                    direction="clockwise"
+                )])
+                fig_donut.update_layout(
+                    template=plotly_template,
+                    title=dict(text=L["total_score"], x=0.5),
+                    annotations=[dict(
+                        text=f"{int(total_score)}", 
+                        x=0.5, y=0.5, 
+                        font_size=40, 
+                        showarrow=False, 
+                        font_weight="bold"
+                    )],
+                    showlegend=False,
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    height=350
+                )
+                st.plotly_chart(fig_donut, use_container_width=True, config=plotly_config, key=f"donut_{safe_target_date}_{safe_facility_code}")
+            
+            # 2行目: 達成率バーグラフ（全幅）
+            # 達成率バーグラフ（Progress Bar Chart）
+            try:
+                # 各エリアの達成率を計算（100点満点）
+                area_names = L["area_labels"]
+                area_scores_values = scores_list
+                max_score = 100.0  # 各エリアの最大スコアは100点
+                
+                # データの検証
+                if not area_names or not area_scores_values or len(area_names) != len(area_scores_values):
+                    st.warning("エリアデータの形式が正しくありません。")
+                else:
+                    # 達成率を計算（パーセンテージ）
+                    achievement_rates = [(float(score) / max_score * 100) if max_score > 0 else 0.0 for score in area_scores_values]
+                    
+                    # 順番を逆にして、システム変革を一番上に表示
+                    area_names_reversed = list(reversed(area_names))
+                    achievement_rates_reversed = list(reversed(achievement_rates))
+                    
+                    # 横棒グラフで達成率を表示
+                    # 色の設定（達成率に応じてグラデーション）
+                    colors = []
+                    for rate in achievement_rates_reversed:
+                        if rate < 50:
+                            colors.append("#e74c3c")  # 赤
+                        elif rate < 75:
+                            colors.append("#f39c12")  # オレンジ
+                        elif rate < 90:
+                            colors.append("#3498db")  # 青
+                        else:
+                            colors.append("#2ecc71")  # 緑
+                    
+                    fig_progress = go.Figure(data=[go.Bar(
+                        x=achievement_rates_reversed,
+                        y=area_names_reversed,
+                        orientation='h',
+                        marker_color=colors,
+                        text=[f"{rate:.1f}%" for rate in achievement_rates_reversed],
+                        textposition='auto',
+                        textfont=dict(size=11, color="white")
+                    )])
+                    
+                    fig_progress.update_layout(
+                        template=plotly_template,
+                        title=dict(text=L["progress_bar_title"], x=0.5),
+                        xaxis=dict(title="Achievement Rate (%)", range=[0, 105]),
+                        yaxis=dict(title=""),
+                        margin=dict(l=20, r=20, t=40, b=40),
+                        height=350,
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_progress, use_container_width=True, config=plotly_config, key=f"progress_{safe_target_date}_{safe_facility_code}")
+            except Exception as e:
+                st.error(f"達成率バーグラフの作成中にエラーが発生しました: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+            
+            # 3行目: 詳細質問スコアの展開テーブル
+            st.subheader(L["question_detail_title"])
+            try:
+                # df_filteredから各エリアごとの質問項目とスコアを取得
+                if not df_filtered.empty and "Area" in df_filtered.columns and quest_col in df_filtered.columns and score_col in df_filtered.columns:
+                    # エリアごとにデータをグループ化（Leadershipは除外）
+                    for area_idx in range(1, 6):
+                        area_name = f"Area{area_idx}"
+                        area_display_name = L["area_labels"][area_idx - 1]
+                        
+                        # 該当エリアのデータを取得
+                        area_data = df_filtered[df_filtered["Area"] == area_name].copy()
+                        
+                        if not area_data.empty:
+                            # スコアを数値に変換（NaNは0として扱う）
+                            area_data[score_col] = pd.to_numeric(area_data[score_col], errors='coerce').fillna(0)
+                            
+                            # エリア合計スコアを計算
+                            area_total_score = float(area_data[score_col].sum())
+                            
+                            # Expanderで展開可能なテーブルを作成
+                            with st.expander(f"📝 {area_display_name} (合計: {int(area_total_score)}点)", expanded=False):
+                                # 質問項目とスコアをソート（質問番号順）
+                                area_data_sorted = area_data.sort_values(by=quest_col).copy()
+                                
+                                # テーブル用のデータフレームを作成
+                                table_data = {
+                                    L["question_label"]: area_data_sorted[quest_col].tolist(),
+                                    L["score_label"]: [int(float(score)) for score in area_data_sorted[score_col].tolist()]
+                                }
+                                df_table = pd.DataFrame(table_data)
+                                
+                                # テーブルを表示
+                                st.dataframe(
+                                    df_table,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        L["question_label"]: st.column_config.TextColumn(
+                                            L["question_label"],
+                                            width="large"
+                                        ),
+                                        L["score_label"]: st.column_config.NumberColumn(
+                                            L["score_label"],
+                                            format="%d点"
+                                        )
+                                    }
+                                )
+                                
+                                # エリア合計を表示
+                                st.caption(f"💡 {L['area_total']}: {int(area_total_score)}点")
+                        else:
+                            # データがない場合もExpanderを表示（空の状態）
+                            with st.expander(f"📝 {area_display_name} (合計: 0点)", expanded=False):
+                                st.info(L["no_data"])
+                else:
+                    st.warning("データの形式が正しくありません。詳細質問スコアを表示できません。")
+            except Exception as e:
+                st.error(f"詳細質問スコアテーブルの作成中にエラーが発生しました: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+    
+        elif selected_tab_idx == 1:
+            # --- Tab 2: Time Series ---
+            st.subheader(f"{selected_facility_name} - {L['time_series_title']}")
+            
+            if code_col in df.columns:
+                df_facility = df[df[code_col] == selected_facility_code].copy()
+            else:
+                df_facility = df[df[fac_col] == selected_facility_name].copy()
+            
+            if not df_facility.empty:
+                # 集計単位（Analysis Unit）に基づいてデータを準備
+                if st.session_state.analysis_unit == "Month":
+                    # 月次推移 (Month vs Score)
+                    df_ts = df_facility[df_facility["Area"] != "Leadership"].groupby([date_col, "Area"])[score_col].sum().unstack(fill_value=0)
+                    xaxis_title = "Month"
+                else:
+                    # 年次推移 (Year vs Score)
+                    agg_method_ts = st.session_state.agg_method
+                    
+                    ts_data = []
+                    for y in sorted(df_facility["Year"].unique()):
+                        df_y = df_facility[df_facility["Year"] == y]
+                        
+                        if agg_method_ts == "End":
+                            df_y = df_y.sort_values(by=date_col, ascending=False).drop_duplicates(subset=[quest_col], keep="first")
+                        elif agg_method_ts == "Start":
+                            df_y = df_y.sort_values(by=date_col, ascending=True).drop_duplicates(subset=[quest_col], keep="first")
+                        elif agg_method_ts == "Mean":
+                            df_y_mean = df_y.groupby(["Area", quest_col])[score_col].mean().reset_index()
+                            df_y = df_y_mean
+                        
+                        area_sums = df_y[df_y["Area"] != "Leadership"].groupby("Area")[score_col].sum()
+                        row = area_sums.to_dict()
+                        row["Year"] = y
+                        ts_data.append(row)
+                    
+                    df_ts = pd.DataFrame(ts_data).set_index("Year").fillna(0)
+                    xaxis_title = "Year"
+
+                df_ts["Total"] = df_ts.sum(axis=1)
+                
+                fig_ts = go.Figure()
+                x_values = [str(x) for x in df_ts.index.tolist()]
+                total_values = df_ts["Total"].tolist()
+                
+                total_line_color = "black" if st.session_state.chart_theme == "Light" else "white"
+                
+                fig_ts.add_trace(go.Scatter(
+                    x=x_values, y=total_values, 
+                    mode="lines+markers", name=L["total_score"], 
+                    line=dict(width=4, color=total_line_color), marker=dict(size=8)
+                ))
+                
+                colors = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6"]
+                for i in range(1, 6):
+                    area_name = f"Area{i}"
+                    if area_name in df_ts.columns:
+                        area_values = df_ts[area_name].tolist()
+                        fig_ts.add_trace(go.Scatter(
+                            x=x_values, y=area_values, 
+                            mode="lines+markers", name=L["area_labels"][i-1],
+                            line=dict(width=2, color=colors[i-1]), marker=dict(size=6)
+                        ))
+                
+                fig_ts.update_layout(
+                    template=plotly_template,
+                    hovermode="x unified", 
+                    yaxis=dict(title="Score", range=[0, 520]),
+                    xaxis=dict(title=xaxis_title),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=500
+                )
+                st.plotly_chart(fig_ts, use_container_width=True, config=plotly_config, key=f"ts_{target_date}_{selected_facility_code}")
+                st.dataframe(df_ts.style.highlight_max(axis=0), use_container_width=True)
+            else:
+                st.info(L["no_data"])
+        
+        elif selected_tab_idx == 2:
+            # --- Tab 3: Comparison ---
+            title_suffix = f"({st.session_state.selected_month})" if st.session_state.analysis_unit == "Month" else f"({st.session_state.selected_year})"
+            st.subheader(f"{L['comparison_title']} {title_suffix}")
+            
+            if st.session_state.analysis_unit == "Month":
+                 if st.session_state.selected_month is None:
+                     df_month = pd.DataFrame()
+                 else:
+                     df_month = df[df[date_col] == st.session_state.selected_month].copy()
+                 
+                 if not df_month.empty:
+                    if code_col in df_month.columns and fac_col in df_month.columns:
+                        df_comp = df_month[df_month["Area"] != "Leadership"].groupby([code_col, fac_col])[score_col].sum().reset_index()
+                        df_comp['Facility_Display'] = df_comp[fac_col] + " (" + df_comp[code_col].astype(str) + ")"
+                    else:
+                        df_comp = df_month[df_month["Area"] != "Leadership"].groupby([fac_col])[score_col].sum().sort_values(ascending=True).reset_index()
+                        df_comp['Facility_Display'] = df_comp[fac_col]
+                    df_comp = df_comp.sort_values(by=score_col, ascending=True)
+                 else:
+                     df_comp = pd.DataFrame()
+            else:
+                # Year mode
+                df_year_all = df[df["Year"] == st.session_state.selected_year].copy()
+                comp_data = []
+                facilities_in_year = df_year_all[[code_col, fac_col]].drop_duplicates() if code_col in df.columns else df_year_all[[fac_col]].drop_duplicates()
+                
+                for _, fac_row in facilities_in_year.iterrows():
+                    fac_c = fac_row[code_col] if code_col in df.columns else None
+                    fac_n = fac_row[fac_col]
+                    
+                    if fac_c:
+                        df_f = df_year_all[df_year_all[code_col] == fac_c]
+                    else:
+                        df_f = df_year_all[df_year_all[fac_col] == fac_n]
+                    
+                    method = st.session_state.agg_method
+                    if method == "End":
+                        df_f = df_f.sort_values(by=date_col, ascending=False).drop_duplicates(subset=[quest_col], keep="first")
+                    elif method == "Start":
+                        df_f = df_f.sort_values(by=date_col, ascending=True).drop_duplicates(subset=[quest_col], keep="first")
+                    elif method == "Mean":
+                        pass
+                    
+                    if method == "Mean":
+                         # エリアごとに平均 -> 合計 (Leadershipを除く)
+                         score_sum = df_f[df_f["Area"] != "Leadership"].groupby(["Area", quest_col])[score_col].mean().groupby("Area").sum().sum()
+                    else:
+                         score_sum = df_f[df_f["Area"] != "Leadership"][score_col].sum()
+                    
+                    row = {fac_col: fac_n, score_col: score_sum}
+                    if code_col in df.columns:
+                        row[code_col] = fac_c
+                    comp_data.append(row)
+                
+                if comp_data:
+                    df_comp = pd.DataFrame(comp_data)
+                    if code_col in df_comp.columns:
+                        df_comp['Facility_Display'] = df_comp[fac_col] + " (" + df_comp[code_col].astype(str) + ")"
+                    else:
+                        df_comp['Facility_Display'] = df_comp[fac_col]
+                    df_comp = df_comp.sort_values(by=score_col, ascending=True)
+                else:
+                    df_comp = pd.DataFrame()
+
+            if not df_comp.empty:
+                x_values_comp = df_comp[score_col].tolist()
+                y_values_comp = df_comp['Facility_Display'].tolist()
+                text_values_comp = [int(x) for x in x_values_comp]
+                
+                fig_comp = go.Figure([go.Bar(
+                    x=x_values_comp, 
+                    y=y_values_comp, 
+                    orientation='h',
+                    marker_color="#667eea",
+                    text=text_values_comp,
+                    textposition='auto'
+                )])
+                
+                if code_col in df_comp.columns:
+                    selected_mask = df_comp[code_col] == selected_facility_code
+                else:
+                    selected_mask = df_comp[fac_col] == selected_facility_name
+                
+                if selected_mask.any():
+                    selected_data = df_comp[selected_mask]
+                    x_selected = selected_data[score_col].tolist()
+                    y_selected = selected_data['Facility_Display'].tolist()
+                    text_selected = [int(x) for x in x_selected]
+                    
+                    fig_comp.add_trace(go.Bar(
+                        x=x_selected,
+                        y=y_selected,
+                        orientation='h',
+                        marker_color="#ff6b6b",
+                        text=text_selected,
+                        textposition='auto',
+                        name="Selected Facility"
+                    ))
+                
+                fig_comp.update_layout(
+                    template=plotly_template,
+                    xaxis=dict(title="Total Score", range=[0, 520]),
+                    yaxis=dict(title="Facility"),
+                    height=max(400, len(df_comp) * 50),
+                    title=f"{L['comparison_title']} {title_suffix}",
+                    showlegend=False
+                )
+                
+                st.plotly_chart(fig_comp, use_container_width=True, config=plotly_config, key=f"comp_{target_date}_{selected_facility_code}")
+                st.dataframe(df_comp[[col for col in df_comp.columns if col != 'Facility_Display'] + ['Facility_Display']].style.highlight_max(axis=0, subset=[score_col]), use_container_width=True)
+            else:
+                st.info(L["no_data"])
+        
+        elif selected_tab_idx == 3:
+            # --- Tab 4: Leadership ---
+            st.subheader(L["tab_leadership"])
+            
+            try:
+                # target_dateがNoneの場合はエラーメッセージを表示
+                if target_date is None:
+                    st.warning("年月が選択されていません。サイドバーから年月を選択してください。")
+                elif total_score >= 376:
+                    st.success(L["eligible"])
+                    
+                    if not leadership_data.empty:
+                        try:
+                            # リーダーシップスコアの内訳（質問順にソート、0点も含める）
+                            leadership_items = leadership_data.groupby(quest_col)[score_col].sum().sort_index()
+                            
+                            # leadership_itemsが空でないことを確認
+                            if len(leadership_items) > 0 and len(leadership_items.index) > 0:
+                                # リーダーシップレベル判定ロジック
+                                # 条件1: 各区分(1-5)で少なくとも1つ以上の基準を満たしている
+                                achieved_categories = []
+                                for cat in ["1", "2", "3", "4", "5"]:
+                                    # 質問項目名に "基準X." が含まれるものを抽出（正規表現）
+                                    # インデックスが文字列でない場合の対策
+                                    try:
+                                        idx_str = leadership_items.index.astype(str)
+                                        items_in_cat = leadership_items[idx_str.str.contains(fr"基準{cat}\.", regex=True)]
+                                        if len(items_in_cat) > 0 and items_in_cat.sum() >= 1:
+                                            achieved_categories.append(cat)
+                                    except Exception as e:
+                                        # エラーが発生した場合はその区分をスキップ
+                                        pass
+                                
+                                all_categories_covered = len(achieved_categories) == 5
+                                is_leadership_level = (leadership_score >= 12) and all_categories_covered
+                                
+                                # 結果メッセージと色の設定
+                                result_msg = L["leadership_achieved"] if is_leadership_level else L["leadership_failed"]
+                                bar_color = "#28a745" if is_leadership_level else "#9b59b6"
+                                
+                                # target_dateがNoneでないことを確認してからkeyを生成
+                                chart_key = f"gauge_{target_date}_{selected_facility_code}" if target_date is not None else f"gauge_none_{selected_facility_code}"
+                                
+                                # 1. Gauge Chart for Total Leadership Score
+                                fig_gauge = go.Figure(go.Indicator(
+                                    mode = "gauge+number",
+                                    value = leadership_score,
+                                    title = {'text': f"{L['leadership_chart_title']}<br><span style='font-size:0.8em; color:gray'>{result_msg}</span>"},
+                                    gauge = {
+                                        'axis': {'range': [0, 20]},
+                                        'bar': {'color': bar_color},
+                                        'steps': [
+                                            {'range': [0, 12], 'color': "#f9f9f9"}, # 12点未満
+                                            {'range': [12, 20], 'color': "#e6e6e6"}  # 12点以上
+                                        ],
+                                        'threshold': {
+                                            'line': {'color': "red", 'width': 4},
+                                            'thickness': 0.75,
+                                            'value': 12 # 合格ライン
+                                        }
+                                    },
+                                    number = {
+                                        'font': {'size': 40},
+                                        'valueformat': '.0f',
+                                        'suffix': ' / 20'
+                                    }
+                                ))
+                                # メーターグラフのレイアウトを固定（画面サイズの調整によるずれを防ぐ）
+                                fig_gauge.update_layout(
+                                    height=350,
+                                    width=600,
+                                    margin=dict(l=50, r=50, t=100, b=50),
+                                    template=plotly_template,
+                                    autosize=False
+                                )
+                                # メーターグラフを中央に配置
+                                col_left, col_center, col_right = st.columns([1, 2, 1])
+                                with col_center:
+                                    st.plotly_chart(fig_gauge, use_container_width=False, config=plotly_config, key=chart_key)
+                                
+                                # 判定結果の詳細表示
+                                if is_leadership_level:
+                                    st.success(f"### {L['congrats']}")
+                                
+                                # 達成要件の説明（常時表示、または未達成時のみ強調など）
+                                with st.expander(f"ℹ️ {L['leadership_criteria_desc']}", expanded=not is_leadership_level):
+                                    st.info(L["leadership_criteria_full"])
+                                    # expanderが開かれたときに、初回の操作を「消費」する
+                                    # 注: st.expander()はkey引数をサポートしていないため、expander内で処理
+                                    if not st.session_state.first_interaction_consumed:
+                                        st.session_state.first_interaction_consumed = True
+                                
+                                # 2. Detailed Breakdown (Checklist style)
+                                st.markdown("### Breakdown")
+                                
+                                # Format dataframe for display
+                                try:
+                                    df_display = leadership_items.reset_index()
+                                    if not df_display.empty and len(df_display.columns) >= 1:
+                                        df_display.columns = ["Question", "Score"]
+                                        
+                                        # 詳細説明を追加
+                                        current_lang = "ja" if lang == "日本語" else "en"
+                                        def get_desc(q_text):
+                                            # Extract number (e.g. "1.1" from "リーダーシップ基準1.1")
+                                            try:
+                                                match = re.search(r"([0-9]+\.[0-9]+)", str(q_text))
+                                                if match:
+                                                    key = match.group(1)
+                                                    return LEADERSHIP_DESC.get(key, {}).get(current_lang, "")
+                                            except:
+                                                pass
+                                            return ""
+                                        
+                                        df_display["Description"] = df_display["Question"].apply(get_desc)
+                                        
+                                        # カラム順序の調整
+                                        df_display = df_display[["Question", "Description", "Score"]]
+                                        
+                                        df_display["Status"] = df_display["Score"].apply(lambda x: "✅ Achieved" if x >= 1 else "⬜ Not Achieved")
+                                        
+                                        # Display as a static table (better for long text wrapping)
+                                        # スコア列は表示しなくてもStatusで分かるので削除、またはQuestionと結合しても良いが、
+                                        # ここでは見やすさ優先で Question, Description, Status の3列にする
+                                        df_table = df_display[["Question", "Description", "Status"]]
+                                        
+                                        # Apply styles
+                                        st.table(
+                                            df_table.style.set_properties(subset=["Description"], **{'min-width': '400px', 'white-space': 'normal'})
+                                            .apply(lambda x: ['background-color: #d4edda' if v == "✅ Achieved" else '' for v in x], subset=["Status"])
+                                        )
+                                    else:
+                                        st.info(L["no_leadership_data"])
+                                except Exception as e:
+                                    st.warning(f"データ表示中にエラーが発生しました: {str(e)}")
+                                    import traceback
+                                    st.code(traceback.format_exc())
+                            else:
+                                # leadership_itemsが空の場合
+                                st.info(L["no_leadership_data"])
+                        except Exception as e:
+                            st.error(f"リーダーシップデータの処理中にエラーが発生しました: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
+                    else:
+                        st.info(L["no_leadership_data"])
+                else:
+                    st.warning(L["not_eligible"])
+                    st.info(L["leadership_required_score"].format(score=int(total_score)))
+            except Exception as e:
+                st.error(f"Error in Leadership Tab: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+
+else:
+    # --- Landing Page (ファイル未選択時) ---
+    st.info(L["landing_info"])
+    
+    st.markdown(f"""
+    ### {L["landing_title"]}
+    
+    {L["landing_desc"]}
+    
+    #### {L["landing_features"]}
+    * **{L["landing_security"]}**
+    * **{L["landing_simple"]}**
+    * **{L["landing_features_desc"]}**
+    
+    #### {L["landing_format"]}
+    {L["landing_format_desc"]}
+    * \`処方箋発行医療機関コード\`
+    * \`施設名\`
+    * \`登録年月\` (例: 202501, 2025/01)
+    * \`質問\` (例: 2.1a 研修頻度, 3.4b 直接観察遵守...)
+    * \`スコア\` (数値)
+    """)
+`
+            }
+        })
+    </script>
+</body>
+
+</html>
